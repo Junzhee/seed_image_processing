@@ -16,6 +16,8 @@ import json
 import logging
 import datetime
 
+import argparse
+
 
 pyrootutils.setup_root(__file__, indicator='.project-root', pythonpath=True)
 
@@ -34,10 +36,11 @@ class CustomDataset(Dataset):
         
         image = np.array(image.resize((256, 256))).astype(np.float32)
         image = image.transpose(2, 0, 1) / 255.0
+        
         return image, idx
 
 
-def process_chunk(rank, world_size, json_data, path, tokenizer_cfg_path, transform_cfg_path, batch_size, output_dir):
+def process_chunk(rank, world_size, json_data, path, tokenizer_cfg_path, transform_cfg_path, batch_size, output_dir, num_workers, prefetch_factor):
     
     torch.cuda.set_device(rank)
     gpu_name = torch.cuda.get_device_name(rank)
@@ -58,49 +61,21 @@ def process_chunk(rank, world_size, json_data, path, tokenizer_cfg_path, transfo
     start_idx = rank * len(json_data) // world_size
     end_idx = (rank + 1) * len(json_data) // world_size
 
-    print("Process {} start_idx: {}, end_idx: {}".format(rank, start_idx, end_idx))
-
-    # print the dataset consumed time
-    dataset_start_time = datetime.datetime.now()
-    print(f"Dataset start on device {rank}, time: ", datetime.datetime.now())
     dataset = CustomDataset(json_data[start_idx:end_idx], path)
-
-    print(f"Dataset completed on device {rank}..., time consumed: ", datetime.datetime.now() - dataset_start_time)
-    print(f"Dataset length on device {rank}: ", len(dataset))
-
-    # print the data loader consumed time
-    print(f"Data loader start on device {rank}, time: ", datetime.datetime.now())
-    dataloader_start_time = datetime.datetime.now()
-
-    data_loader = DataLoader(dataset, 
-                             batch_size=batch_size, 
-                             shuffle=False, 
-                             num_workers=12, 
-                             pin_memory=True, 
-                             persistent_workers=True,
-                             prefetch_factor=4)
-
-    print(f"Data loader finished on device {rank}, time: ", datetime.datetime.now())
-    print(f"Total time consumed on device {rank}: ", datetime.datetime.now() - dataloader_start_time)
-    print(f"Total number of batches on device {rank}: ", len(data_loader))
-
-
+    data_loader = DataLoader(dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=True, prefetch_factor=prefetch_factor)
 
     try:
         print(f"Image Processing start on device {rank}, time: ", datetime.datetime.now())
 
         for images, indices in tqdm(data_loader, position=rank):
-            images = images.to(f'cuda:{rank}', non_blocking = True)
-
-            # print(f"Rank {rank} is processing the following indices: {indices}...")
-            print(f"Rank {rank} is processing images with shape: {images.shape}...")
-            indice_start_time = datetime.datetime.now()
+            images = images.to(f'cuda:{rank}')
 
             with torch.no_grad():
                 transformed_images = transform(images)
                 tokens = tokenizer.encode_image(image_torch=transformed_images)
-
                 
+                # print(f"Debug: Tokens on device {rank} - {tokens[:3]}")  
+
             updated_data = []
 
             for i, idx in enumerate(indices):
@@ -116,16 +91,8 @@ def process_chunk(rank, world_size, json_data, path, tokenizer_cfg_path, transfo
             output_filename = os.path.join(output_dir, f'processed_data_chunk_{rank}.json')
             with open(output_filename, 'w') as file: 
                 json.dump(json_data[start_idx:end_idx], file)
-                
-                # print(f"Dumped data to file on device {rank}, time: ", datetime.datetime.now())
 
-
-            print(f"Rank {rank} finished processing the indices:... Time consumed: ", datetime.datetime.now() - indice_start_time)
-     
-            
-
-
-        print(f"Image Processing finished on device {rank}, time: ", datetime.datetime.now())
+        print(f"Image Ppocessing finished on device {rank}, time: ", datetime.datetime.now())
         # print the total time of the current process
         print(f"Total time consumed on device {rank}: ", datetime.datetime.now() - start_time_on_device)
 
@@ -146,21 +113,51 @@ def combine_chunks(output_dir):
                 data = json.load(file)
                 combined_data.extend(data)
 
-    last_dir_name = os.path.basename(output_dir)
-    custom_filename = f'processed_{last_dir_name}.json'
-    full_path = os.path.join(output_dir, custom_filename)
-
-
-    with open(full_path, 'w') as file:
+    with open(os.path.join(output_dir, 'combined_data.json'), 'w') as file:
         json.dump(combined_data, file)
-
-    # with open(os.path.join(output_dir, 'combined_data.json'), 'w') as file:
-    #     json.dump(combined_data, file)
 
     print("Combined all chunks into a single file.")
 
+def parse_args():
+    parser = argparse.ArgumentParser(description="Process some integers.")
+    parser.add_argument('--output_dir', type=str, required=True, help='Output directory')
+    parser.add_argument('--num_gpus', type=int, required=True, default=4, help='Number of GPUs')
+    parser.add_argument('--BS', type=int, required=True, help='Batch Size')
+    parser.add_argument('--path_to_data', type=str, required=True, help='Path to Data')
+    parser.add_argument('--tokenizer_cfg_path', type=str, required=True, help='Tokenizer Config Path')
+    parser.add_argument('--transform_cfg_path', type=str, required=True, help='Transform Config Path')
+    parser.add_argument('--path_to_json', type=str, required=True, help='Path to JSON')
+    parser.add_argument('--num_workers', type=int, required=True, help='Number of workers of dataloader')
+    parser.add_argument('--prefetch_factor', type=int, required=True, help='Prefetch factor of dataloader')
+    
+    return parser.parse_args()
+
 
 def main():
+
+
+    args = parse_args()
+    num_gpus = args.num_gpus
+    BS = args.BS
+    path_to_data = args.path_to_data
+    output_dir = args.output_dir
+    tokenizer_cfg_path = args.tokenizer_cfg_path
+    transform_cfg_path = args.transform_cfg_path
+    path_to_json = args.path_to_json
+    num_workers = args.num_workers
+    prefetch_factor = args.prefetch_factor
+
+    # print the settings:
+    print(f"Number of GPUs: {num_gpus}")
+    print(f"Batch Size: {BS}")
+    print(f"Path to Data: {path_to_data}")
+    print(f"Output Directory: {output_dir}")
+    print(f"Tokenizer Config Path: {tokenizer_cfg_path}")
+    print(f"Transform Config Path: {transform_cfg_path}")
+    print(f"Path to JSON: {path_to_json}")
+    print(f"Number of workers of dataloader: {num_workers}")
+    print(f"Prefetch factor of dataloader: {prefetch_factor}")
+    
 
     # current_time = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     # log_filename = f"log_{current_time}.txt"
@@ -171,29 +168,18 @@ def main():
     start_time = datetime.datetime.now()
     print(f"All process start time: {start_time}")  
     
-    num_gpus = 4 
-    BS = 2048  
 
-    path_to_data = '/p/fastdata/mmlaion/ShareGPT4V'
-    path_to_json = '/p/scratch/ccstdl/xu17/jz/seed_token/modified_json/'
-    
-    # output_dir = '/p/scratch/ccstdl/xu17/jz/seed_token/output/sharegpt4v_instruct_gpt4-vision_cap100k'
-    output_dir = '/p/scratch/ccstdl/xu17/jz/seed_token/output/share-captioner_coco_lcs_sam_1246k_1107'
     os.makedirs(output_dir, exist_ok=True)
 
     # Load JSON data
-    # with open(os.path.join(path_to_json, 'captions/modified_sharegpt4v_instruct_gpt4-vision_cap100k.json'), 'r') as file:
-    with open(os.path.join(path_to_json, 'captions/modified_share-captioner_coco_lcs_sam_1246k_1107.json'), 'r') as file:
-        # for testing purpose, only load the first 1000 data
+    with open(os.path.join(path_to_data, path_to_json), 'r') as file:
         # json_data = json.load(file)[:1000]
         json_data = json.load(file)
 
-    tokenizer_cfg_path = '/p/scratch/ccstdl/xu17/jz/seed_token/model_config/seed_llama_tokenizer_hf.yaml'
-    transform_cfg_path = '/p/scratch/ccstdl/xu17/jz/seed_token/model_config/clip_transform.yaml'
 
 
     mp.spawn(process_chunk,
-            args=(num_gpus, json_data, os.path.join(path_to_data, 'data'), tokenizer_cfg_path, transform_cfg_path, BS, output_dir),
+            args=(num_gpus, json_data, os.path.join(path_to_data, 'data'), tokenizer_cfg_path, transform_cfg_path, BS, output_di, num_workers, prefetch_factor),
             nprocs=num_gpus,
             join=True)
 

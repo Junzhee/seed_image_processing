@@ -1,4 +1,8 @@
 
-log.txt
+*.txt
 
 share-captioner_coco_lcs_sam_1246k_1107.json
+
+/output
+
+/modified_json
