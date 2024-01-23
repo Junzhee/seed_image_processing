@@ -44,7 +44,7 @@ def process_chunk(rank, world_size, json_data, path, tokenizer_cfg_path, transfo
     gpu_name = torch.cuda.get_device_name(rank)
     print(f"Process {rank} is using GPU: {gpu_name}")
     print("time: ", datetime.datetime.now())
-    start_time_on_device = datetime.datetime.now()
+    start_time_on_rank = datetime.datetime.now()
 
     tokenizer_cfg = OmegaConf.load(tokenizer_cfg_path)
     tokenizer = hydra.utils.instantiate(tokenizer_cfg, device=rank, load_diffusion=False)
@@ -76,7 +76,7 @@ def process_chunk(rank, world_size, json_data, path, tokenizer_cfg_path, transfo
     data_loader = DataLoader(dataset, 
                              batch_size=batch_size, 
                              shuffle=False, 
-                             num_workers=8, 
+                             num_workers=12,
                              pin_memory=True, 
                              persistent_workers=True,
                              prefetch_factor=2)
@@ -128,7 +128,7 @@ def process_chunk(rank, world_size, json_data, path, tokenizer_cfg_path, transfo
 
     print(f"Image Processing finished on device {rank}, time: ", datetime.datetime.now())
     # print the total time of the current process
-    print(f"Total time consumed on device {rank}: ", datetime.datetime.now() - start_time_on_device)
+    print(f"Total time consumed on device {rank}: ", datetime.datetime.now() - start_time_on_rank)
 
     average_batch_time = sum(avg_batch_time_list) / len(avg_batch_time_list) if avg_batch_time_list else 0
     average_waiting_time = sum(avg_waiting_time_list) / len(avg_waiting_time_list) if avg_waiting_time_list else 0
@@ -137,7 +137,7 @@ def process_chunk(rank, world_size, json_data, path, tokenizer_cfg_path, transfo
     print(f"Average waiting time on device {rank}: ", average_waiting_time)
 
     # Plotting the line chart
-    plt.figure(figsize=(10, 5))
+    plt.figure(figsize=(20, 10))
     plt.plot(avg_batch_time_list, label='Average GPU Running Time per Batch')
     plt.plot(avg_waiting_time_list, label='Average GPU Waiting/Loading Time per Batch')
     plt.xlabel('Batch Number')
@@ -146,7 +146,7 @@ def process_chunk(rank, world_size, json_data, path, tokenizer_cfg_path, transfo
     plt.legend()
 
     # Saving the plot to a JPG file
-    plt_filename = f"rank_{rank}_plot_time_program_start_{program_start_time}.jpg"
+    plt_filename = f"{program_start_time}_rank_{rank}_plot_time.jpg"
     plt.savefig(plt_filename)
     print(f"Plot saved to {plt_filename}")
 
@@ -186,7 +186,7 @@ def main():
     path_to_json = '/p/scratch/ccstdl/xu17/jz/seed_token/modified_json/'
     
     output_dir = '/p/scratch/ccstdl/xu17/jz/seed_token/output_test/sharegpt4v_instruct_gpt4-vision_cap100k'
-    # output_dir = '/p/scratch/ccstdl/xu17/jz/seed_token/output_2/share-captioner_coco_lcs_sam_1246k_1107'
+    # output_dir = '/p/scratch/ccstdl/xu17/jz/seed_token/output_test/share-captioner_coco_lcs_sam_1246k_1107'
     os.makedirs(output_dir, exist_ok=True)
 
     # Load JSON data
